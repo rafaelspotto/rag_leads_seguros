@@ -4,8 +4,6 @@ import argparse
 import io
 import json
 import os
-import shutil
-import subprocess
 import tempfile
 from pathlib import Path
 from typing import List
@@ -17,7 +15,12 @@ from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 
 from configuracao import carregar_propriedades
-from drive_api import baixar_arquivo, extrair_id_pasta, listar_arquivos_pasta
+from drive_api import (
+    baixar_arquivo,
+    exportar_texto_plano,
+    extrair_id_pasta,
+    listar_arquivos_pasta,
+)
 from texto_utils import limpar_texto, separar_secoes, fatiar_secoes
 from observabilidade import registrar_evento
 
@@ -36,30 +39,84 @@ def extrair_texto_docx_bytes(conteudo: bytes) -> str:
     return "\n".join(p.text for p in doc.paragraphs)
 
 
-def extrair_texto_word(caminho: Path) -> str | None:
-    if os.name != "nt":
-        return None
-
+def extrair_texto_html(conteudo: str) -> str:
     try:
-        import win32com.client  # type: ignore
+        from bs4 import BeautifulSoup
     except Exception:
-        return None
+        import re
 
-    word = None
-    documento = None
+        texto = re.sub(r"<[^>]+>", " ", conteudo)
+        return " ".join(texto.split())
+
+    soup = BeautifulSoup(conteudo, "html.parser")
+    return " ".join(soup.get_text(" ").split())
+
+
+def configurar_ambiente_textract() -> None:
+    caminhos_bins = [
+        r"C:\msys64\mingw64\bin",
+        r"C:\msys64\ucrt64\bin",
+        r"C:\msys64\usr\bin",
+    ]
+    path_atual = os.environ.get("PATH", "")
+    for caminho_bin in caminhos_bins:
+        if caminho_bin not in path_atual:
+            path_atual = f"{caminho_bin};{path_atual}"
+    os.environ["PATH"] = path_atual
+    if not os.environ.get("HOME"):
+        os.environ["HOME"] = os.environ.get("USERPROFILE", "")
+
+
+def extrair_texto_textract_bytes(conteudo: bytes, sufixo: str) -> str:
+    if conteudo.startswith(b"PK\x03\x04"):
+        return extrair_texto_docx_bytes(conteudo)
     try:
-        word = win32com.client.Dispatch("Word.Application")
-        word.Visible = False
-        documento = word.Documents.Open(str(caminho))
-        texto = documento.Content.Text
-        return texto
-    except Exception:
-        return None
+        import textract
+    except Exception as exc:  # pragma: no cover - dependency error
+        raise RuntimeError("textract nao instalado. Instale requirements.txt.") from exc
+
+    configurar_ambiente_textract()
+
+    with tempfile.NamedTemporaryFile(suffix=sufixo, delete=False) as tmp:
+        tmp.write(conteudo)
+        tmp_path = Path(tmp.name)
+    try:
+        resultado = textract.process(str(tmp_path))
+        return resultado.decode("utf-8", errors="ignore")
+    except Exception as exc:  # pragma: no cover - external tool error
+        try:
+            texto = conteudo.decode("utf-8", errors="ignore")
+            if "<html" in texto.lower():
+                return extrair_texto_html(texto)
+        except Exception:
+            pass
+        raise RuntimeError(f"Falha ao ler arquivo com textract: {exc}") from exc
     finally:
-        if documento is not None:
-            documento.Close(False)
-        if word is not None:
-            word.Quit()
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def extrair_texto_textract_arquivo(caminho: Path) -> str:
+    try:
+        import textract
+    except Exception as exc:  # pragma: no cover - dependency error
+        raise RuntimeError("textract nao instalado. Instale requirements.txt.") from exc
+
+    configurar_ambiente_textract()
+    try:
+        resultado = textract.process(str(caminho))
+        return resultado.decode("utf-8", errors="ignore")
+    except Exception as exc:  # pragma: no cover - external tool error
+        try:
+            texto = caminho.read_text(encoding="utf-8", errors="ignore")
+            if "<html" in texto.lower():
+                return extrair_texto_html(texto)
+        except Exception:
+            pass
+        raise RuntimeError(f"Falha ao ler arquivo com textract: {exc}") from exc
+
 
 
 def extrair_texto(caminho: Path) -> str:
@@ -68,41 +125,7 @@ def extrair_texto(caminho: Path) -> str:
         return extrair_texto_docx(caminho)
 
     if sufixo == ".doc":
-        texto_word = extrair_texto_word(caminho)
-        if texto_word:
-            return texto_word
-        caminho_antiword = shutil.which("antiword")
-        if caminho_antiword is None:
-            caminhos_possiveis = [
-                r"C:\msys64\mingw64\bin\antiword.exe",
-                r"C:\msys64\ucrt64\bin\antiword.exe",
-                r"C:\msys64\usr\bin\antiword.exe",
-            ]
-            for candidato in caminhos_possiveis:
-                if Path(candidato).exists():
-                    caminho_antiword = candidato
-                    break
-        if caminho_antiword is None:
-            raise RuntimeError(
-                "Microsoft Word nao encontrado para leitura via pywin32 e "
-                "antiword nao esta instalado. Instale o Word, instale "
-                "antiword ou converta os .doc para .docx."
-            )
-        try:
-            resultado = subprocess.run(
-                [caminho_antiword, str(caminho)],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-        except FileNotFoundError as exc:  # pragma: no cover - external tool error
-            raise RuntimeError(
-                "antiword nao encontrado. Instale o antiword "
-                "ou converta os .doc para .docx manualmente."
-            ) from exc
-        except subprocess.CalledProcessError as exc:  # pragma: no cover
-            raise RuntimeError("Falha ao ler .doc com antiword.") from exc
-        return resultado.stdout
+        return extrair_texto_textract_arquivo(caminho)
 
     raise RuntimeError("Formato nao suportado. Use .docx ou .doc.")
 
@@ -127,13 +150,13 @@ def iterar_documentos(pasta_entrada: Path) -> List[Path]:
 
 
 def criar_indice(
+    pasta_entrada: Path,
     pasta_indice: Path,
     modelo: str,
     max_caracteres: int,
     sobreposicao: int,
-    drive_url: str = "",
-    api_key: str = "",
 ) -> None:
+    pasta_entrada = pasta_entrada.resolve()
     pasta_indice.mkdir(parents=True, exist_ok=True)
 
     modelo_embeddings = HuggingFaceEmbeddings(model_name=modelo)
@@ -149,32 +172,11 @@ def criar_indice(
         sobreposicao=sobreposicao,
     )
 
-    propriedades = carregar_propriedades()
-    if not drive_url:
-        drive_url = propriedades.get("DRIVE_URL", "").strip()
-    if not api_key:
-        api_key = propriedades.get("GOOGLE_API_KEY", "").strip()
-    if not drive_url:
-        raise RuntimeError("DRIVE_URL nao configurada em config.properties.")
-    pasta_id = extrair_id_pasta(drive_url)
-    arquivos = listar_arquivos_pasta(pasta_id, api_key or None)
-    for arquivo in tqdm(arquivos, desc="Lendo documentos do Drive"):
-        nome = arquivo.get("name", "")
-        arquivo_id = arquivo.get("id", "")
-        if not nome or not arquivo_id:
-            continue
-        extensao = Path(nome).suffix.lower()
-        if extensao not in {".doc", ".docx"}:
-            continue
+    for caminho in tqdm(iterar_documentos(pasta_entrada), desc="Lendo documentos"):
         try:
-            conteudo = baixar_arquivo(arquivo_id, api_key or None)
-            if extensao == ".docx":
-                texto = extrair_texto_docx_bytes(conteudo)
-            else:
-                texto = extrair_texto_doc_bytes(conteudo)
-            texto = limpar_texto(texto)
+            texto = limpar_texto(extrair_texto(caminho))
         except Exception as exc:
-            falhas.append({"arquivo": nome, "erro": str(exc)})
+            falhas.append({"arquivo": caminho.name, "erro": str(exc)})
             continue
         secoes = separar_secoes(texto)
         chunks = fatiar_secoes(
@@ -183,19 +185,19 @@ def criar_indice(
         for i, chunk in enumerate(chunks):
             todos_chunks.append(
                 {
-                    "id": f"{Path(nome).stem}-{i}",
-                    "file_name": nome,
+                    "id": f"{caminho.stem}-{i}",
+                    "file_name": caminho.name,
                     "title": chunk["title"],
                     "text": chunk["text"],
                 }
             )
 
     if not todos_chunks:
-        registrar_evento("index_vazio", pasta_entrada="drive")
+        registrar_evento("index_vazio", pasta_entrada=str(pasta_entrada))
         if falhas:
             registrar_evento(
                 "index_falhas",
-                pasta_entrada="drive",
+                pasta_entrada=str(pasta_entrada),
                 falhas=falhas,
             )
         raise RuntimeError("Nenhum documento indexado. Verifique erros de leitura.")
@@ -206,7 +208,7 @@ def criar_indice(
         for c in todos_chunks
     ]
 
-    indice = FAISS.from_texts(textos, modelo_embeddings, metadados=metadados)
+    indice = FAISS.from_texts(textos, modelo_embeddings, metadatas=metadados)
     indice.save_local(str(pasta_indice))
 
     with open(pasta_indice / "config.json", "w", encoding="utf-8") as f:
@@ -224,7 +226,7 @@ def criar_indice(
 
     registrar_evento(
         "index_fim",
-        pasta_entrada="drive",
+        pasta_entrada=str(pasta_entrada),
         pasta_indice=str(pasta_indice),
         modelo=modelo,
         total_trechos=len(todos_chunks),
@@ -233,13 +235,14 @@ def criar_indice(
     if falhas:
         registrar_evento(
             "index_falhas",
-            pasta_entrada="drive",
+            pasta_entrada=str(pasta_entrada),
             falhas=falhas,
         )
 
 
 def ler_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Indexador RAG simples")
+    parser.add_argument("--input", default="data/raw", help="Pasta com .doc/.docx")
     parser.add_argument("--index-dir", default="index", help="Pasta do indice")
     parser.add_argument(
         "--model",
@@ -248,20 +251,17 @@ def ler_args() -> argparse.Namespace:
     )
     parser.add_argument("--max-caracteres", type=int, default=1200)
     parser.add_argument("--sobreposicao", type=int, default=200)
-    parser.add_argument("--drive-url", default="")
-    parser.add_argument("--google-api-key", default="")
     return parser.parse_args()
 
 
 def main() -> None:
     args = ler_args()
     criar_indice(
+        Path(args.input),
         Path(args.index_dir),
         args.model,
         args.max_caracteres,
         args.sobreposicao,
-        args.drive_url,
-        args.google_api_key,
     )
 
 

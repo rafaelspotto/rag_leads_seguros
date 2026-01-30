@@ -1,0 +1,6 @@
+{
+  "modelo": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+  "max_caracteres": 1200,
+  "sobreposicao": 200,
+  "total_trechos": 1702
+}

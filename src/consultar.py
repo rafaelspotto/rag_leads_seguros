@@ -7,7 +7,7 @@ from typing import List
 
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.documents import Document
 
@@ -58,20 +58,34 @@ def formatar_fontes(documentos: List[Document]) -> str:
     return "\n".join(linhas)
 
 
+def montar_fontes(documentos: List[Document]) -> List[dict]:
+    fontes = []
+    for doc in documentos:
+        trecho = doc.page_content[:400].replace("\n", " ").strip()
+        fontes.append(
+            {
+                "arquivo": doc.metadata.get("arquivo", "desconhecido"),
+                "titulo": doc.metadata.get("titulo", "Sem titulo"),
+                "trecho": trecho,
+            }
+        )
+    return fontes
+
+
 def gerar_resposta(
     consulta: str,
     documentos: List[Document],
     modelo_llm: str | None,
 ) -> str:
     propriedades = carregar_propriedades()
-    api_key = propriedades.get("OPENAI_API_KEY", "").strip()
-    modelo = (modelo_llm or propriedades.get("OPENAI_MODEL", "")).strip()
+    api_key = propriedades.get("GEMINI_API_KEY", "").strip()
+    modelo = (modelo_llm or propriedades.get("GEMINI_MODEL", "")).strip()
     temperatura = propriedades.get("TEMPERATURA", "0.2").strip()
 
     if not api_key:
-        raise RuntimeError("OPENAI_API_KEY nao encontrado em config.properties.")
+        raise RuntimeError("GEMINI_API_KEY nao encontrado em config.properties.")
     if not modelo:
-        raise RuntimeError("OPENAI_MODEL nao definido em config.properties.")
+        raise RuntimeError("GEMINI_MODEL nao definido em config.properties.")
 
     try:
         temperatura_float = float(temperatura)
@@ -96,7 +110,9 @@ def gerar_resposta(
         ]
     )
 
-    llm = ChatOpenAI(api_key=api_key, model=modelo, temperature=temperatura_float)
+    llm = ChatGoogleGenerativeAI(
+        google_api_key=api_key, model=modelo, temperature=temperatura_float
+    )
     mensagem = prompt.format_messages(consulta=consulta, fontes="\n\n".join(fontes))
     resposta = llm.invoke(mensagem)
     return resposta.content.strip()

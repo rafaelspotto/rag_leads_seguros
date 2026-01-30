@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from baixar import baixar_pasta_drive
 from consultar import buscar, formatar_fontes, gerar_resposta
+from configuracao import carregar_propriedades
 from indexar import criar_indice
 
 
@@ -13,8 +15,13 @@ def ler_args() -> argparse.Namespace:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    baixar_parser = subparsers.add_parser("baixar", help="Baixar documentos")
+    baixar_parser.add_argument("--folder-url", default="", help="URL da pasta do Drive")
+    baixar_parser.add_argument("--output", default="data/raw", help="Pasta de destino")
+
     indexar_parser = subparsers.add_parser("indexar", help="Indexar documentos")
     indexar_parser.add_argument("--index-dir", default="index", help="Pasta do indice")
+    indexar_parser.add_argument("--input", default="data/raw", help="Pasta com .doc/.docx")
     indexar_parser.add_argument(
         "--model",
         default="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
@@ -23,7 +30,6 @@ def ler_args() -> argparse.Namespace:
     indexar_parser.add_argument("--max-caracteres", type=int, default=1200)
     indexar_parser.add_argument("--sobreposicao", type=int, default=200)
     indexar_parser.add_argument("--drive-url", default="")
-    indexar_parser.add_argument("--google-api-key", default="")
 
     consultar_parser = subparsers.add_parser("consultar", help="Consultar indice")
     consultar_parser.add_argument("--index-dir", default="index", help="Pasta do indice")
@@ -42,14 +48,21 @@ def ler_args() -> argparse.Namespace:
 def main() -> None:
     args = ler_args()
 
+    if args.command == "baixar":
+        propriedades = carregar_propriedades()
+        url_pasta = args.folder_url.strip() or propriedades.get("DRIVE_URL", "").strip()
+        if not url_pasta:
+            raise RuntimeError("DRIVE_URL nao configurada em config.properties.")
+        baixar_pasta_drive(url_pasta, Path(args.output))
+        return
+
     if args.command == "indexar":
         criar_indice(
+            Path(args.input),
             Path(args.index_dir),
             args.model,
             args.max_caracteres,
             args.sobreposicao,
-            args.drive_url,
-            args.google_api_key,
         )
         return
 

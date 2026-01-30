@@ -3,8 +3,11 @@ sentence-transformers==2.7.0
 numpy==2.1.2
 tqdm==4.66.4
 python-docx==1.1.2
-langchain-community==0.3.14
-langchain-openai==0.2.10
-langchain-huggingface==0.1.0
-pywin32==311
+langchain-community==0.3.27
+langchain-huggingface==0.1.2
+langchain-core==0.3.76
 requests==2.32.3
+textract==1.6.5
+beautifulsoup4==4.8.2
+langchain-google-genai==2.0.5
+flask==3.0.3

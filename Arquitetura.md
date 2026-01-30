@@ -57,8 +57,41 @@ Rastreabilidade e citacoes
 
 Arquitetura sugerida (diagrama em Markdown)
 
-[Google Drive] -> [Ingestao] -> [.doc Parser] -> [Pre-processamento e Chunking]
-   -> [Embeddings] -> [Base Vetorial] -> [Retriever + Reranker]
-   -> [LLM Gerador] -> [Resposta com citacoes]
+
+[Google Drive Publico]
+        |
+        v
+[Download Publico]
+        |
+        v
+[Extracao de Texto]
+  - .docx: python-docx
+  - .doc: textract
+  - .doc HTML: BeautifulSoup
+        |
+        v
+[Limpeza + Chunking]
+        |
+        v
+[Embeddings]
+  - sentence-transformers
+        |
+        v
+[Base Vetorial FAISS]
+        |
+        v
+[Consulta]
+  - Recuperacao top-k
+  - Resposta com Gemini
+        |
+        v
+[Chat Web]
+  - Flask
+  - Pergunta e resposta
+        |
+        v
+[Observabilidade]
+  - logs/metrics.jsonl
+
 
 Observabilidade acompanha todas as etapas com logs e metricas.

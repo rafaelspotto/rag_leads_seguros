@@ -1,6 +1,5 @@
 # Configure as chaves e parametros da LLM aqui
-OPENAI_API_KEY=
-OPENAI_MODEL=gpt-4o-mini
+GEMINI_API_KEY=
+GEMINI_MODEL=models/gemini-2.5-flash
 TEMPERATURA=0.2
 DRIVE_URL=
-GOOGLE_API_KEY=
